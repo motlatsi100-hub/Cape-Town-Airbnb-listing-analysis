@@ -1,0 +1,1089 @@
+---
+format: pdf
+editor: visual
+---
+
+\begin{titlepage}
+\centering
+
+\vspace*{2cm}
+
+{\Huge\bfseries Cape Town Airbnb listing analysis\par}
+
+\vspace{1.5cm}
+
+{\Large Motlatsi Seeko\par}
+
+{\large Student Number: SKXMOT001\par}
+
+\vspace{1cm}
+
+{\large Course: Supervised learning\par}
+
+{\large Department of Statistical Science\par}
+
+\vspace{1.5cm}
+
+{\large University of Cape Town\par}
+
+\vfill
+
+{\large May 15th, 2026\par}
+
+\end{titlepage}
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+
+listing<- read.csv("listings.csv",header=TRUE)
+head(listing)
+sum(is.na(listing))
+(nrow(listing))
+(names(listing))
+```
+
+# 1.section 1
+
+## 1.1 Introduction
+
+Short-term rental platforms such as Airbnb have raised concerns regarding housing affordability and rental availability in Cape Town. This project aimed to model the probability that an Airbnb listing would not be fully booked over the next 30 days, where the target class (“no”) represents listings expected to remain vacant for at least one night. The provided dataset was prepared for modelling, while a brief exploratory data analysis (EDA) was performed to understand the underlying data structure. Several supervised learning models were then trained and evaluated using 10-fold cross-validation, model performance metrics were computed and compared, and the best performing model was selected for final interpretation and prediction.
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+
+#data preparation
+library(tidyverse)
+
+
+listing <- listing %>%
+  mutate(
+    
+    host_since = as.Date(host_since),
+    
+    host_response_time = factor(host_response_time,
+      levels = c("within an hour",
+                 "within a few hours",
+                 "within a day",
+                 "a few days or more")
+    ),
+    
+    host_is_superhost = factor(host_is_superhost),
+    room_type         = factor(room_type),
+    instant_bookable  = factor(instant_bookable),
+    
+    host_years = as.numeric(difftime(Sys.Date(), host_since, units = "days")) / 365,
+    
+    fully_booked_30 = factor(fully_booked_30, levels = c("no", "yes"))
+  ) %>%
+  
+  select(-host_id, -host_verifications, -host_since) %>%
+  drop_na()
+
+```
+
+## 1.2 Exploratory data analysis
+
+```{r}
+#| echo: false
+#| fig-width: 7.5
+#| fig-height: 2.5
+#| fig-pos: "H"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+#| label: fig-fully_box
+#| fig-cap: Boxplots showing Price (log scale) and Reviews per Month by Booking Status (fully_booked_30) for Airbnb listings in Cape Town
+library(ggplot2)
+library(gridExtra) # to arrange multiple plots
+
+# Boxplot for Price (log scale)
+box_price <- ggplot(listing, aes(x = fully_booked_30, y = price, group = fully_booked_30)) +
+  geom_boxplot(aes(fill = fully_booked_30), outlier.colour = "red", alpha = 0.6) +
+  scale_y_log10(labels = scales::comma_format()) +
+  scale_fill_manual(values=c("no" = "#4C9BE8", "yes" = "#E07B54")) +
+  labs(title = "Price by Booking Status", x = "Booking Status", y = "Price (log scale)") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        legend.position = 'none')
+
+# Boxplot for Reviews per Month (linear scale)
+box_reviews <- ggplot(listing, aes(x = fully_booked_30, y = reviews_per_month, group = fully_booked_30)) +
+  geom_boxplot(aes(fill = fully_booked_30), outlier.colour = "red", alpha = 0.6) +
+  scale_y_continuous(limits = c(0, 10)) + # cap to show moderate outliers
+  scale_fill_manual(values=c("no" = "#4C9BE8", "yes" = "#E07B54")) +
+  labs(title = "Reviews per Month by Booking Status", x = "Booking Status", y = "Reviews per Month") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        legend.position = 'none')
+
+# Arrange plots side by side
+grid.arrange(box_price, box_reviews, ncol = 2)
+```
+
+The two box plots as shown in @fig-fully_box offer a preliminary look at how price and review activity relate to booking status. In the Price by Booking Status plot, both the "yes" (fully booked) and "no" (not fully booked) groups are centred around a similar median of roughly R1,000–R2,000 per night, suggesting price alone is unlikely to be a strong discriminator; however, the "no" group displays a longer upper tail with more extreme outliers, hinting that very high-priced listings tend to remain vacant, a reasonable finding given that premium properties attract a narrower market. Turning to the Reviews per Month by Booking Status plot, the "no" group shows a noticeably higher median and greater spread compared to the fully booked "yes" group, which is somewhat counterintuitive but may reflect that listings with higher guest turnover (shorter stays, more frequent bookings) accumulate reviews faster while still experiencing occasional vacant nights, whereas fully booked listings may cater to longer-stay guests who review less frequently.
+
+```{r}
+#| echo: false
+#| label: fig -bar
+#| fig-cap: ""
+#| fig-width: 5
+#| fig-height: 2.5
+#| fig-pos: "H"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+#| include: false
+listing %>%
+  group_by(room_type, fully_booked_30) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(room_type) %>%
+  mutate(pct = n / sum(n) * 100) %>%
+  ggplot(aes(x = room_type, y = pct, fill = fully_booked_30)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("no" = "#4C9BE8", "yes" = "#E07B54")) +
+  labs(
+    title = "Booking Status by Room Type",
+    x = "Room Type",
+    y = "Percentage (%)",
+    fill = "Fully Booked"
+  ) +
+  theme_minimal(base_size = 13)
+
+```
+
+```{r}
+#| echo: false
+#| fig-width: 5
+#| fig-height: 2.5
+#| fig-pos: "H"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+#| include: false
+#| lable: fig-scatter_plt
+#| fig-cap: "Scatter plot of Price (log scale) and Reviews per Month for Cape Town Airbnb listings, colored and shaped by Booking Status (fully_booked_30)"
+
+ggplot(listing, aes(x = price, y = reviews_per_month, color = fully_booked_30, shape = fully_booked_30)) +
+  geom_point(alpha = 0.6, size = 2) +
+  scale_x_log10(labels = scales::comma_format()) + # log scale for skewed prices
+  scale_color_manual(values = c("no" = "blue", "yes" = "red")) +
+  scale_shape_manual(values = c("no" = 16, "yes" = 17)) + # different shapes for booking status
+  labs(
+    title = "Price vs Reviews per Month by Booking Status",
+    x = "Price (log scale)",
+    y = "Reviews per Month",
+    color = "Fully Booked",
+    shape = "Fully Booked"
+  ) +
+  theme_minimal(base_size = 13)
+
+```
+
+```{r}
+
+```
+
+# 2. Section 2
+
+## 2.1 Model Training
+
+### 2.1.1. Vanilla Logistic regression
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+#| 
+library(kableExtra) 
+library(broom)
+
+logit_model <- glm(
+  fully_booked_30 ~ .,
+  data   = listing,
+  family = binomial
+)
+
+logit_model |> tidy() |> kable(digits = 3, format = "latex", booktabs = TRUE)
+
+```
+
+In the vanilla logistic regression, a number of variables emerge as notably significant.In the vanilla logistic regression, a number of variables emerge as notably significant. The strongest predictors with p-values effectively at zero are reviews_per_month, host_listings_count, and host_years, suggesting that a host's experience, portfolio size, and the frequency of guest reviews are the most influential drivers of whether a listing is not fully booked. host_response_time within a day is similarly highly significant, indicating that response behavior plays a meaningful role. At the 1% level, review_scores_rating and instant_bookable are also significant, implying that listing quality and booking convenience matter to occupancy. A further group host_acceptance_rate, host_response_time within a few hours, bedrooms, latitude, and longitude, are significant at the 5% level, suggesting that geographic location and physical listing characteristics carry modest but real predictive value. Conversely, several variables appear notably non-significant. beds (p = 0.995), maximum_nights (p = 0.829), accommodates (p = 0.797), number_of_reviews (p = 0.664), and minimum_nights (p = 0.613) all show p-values far exceeding any conventional threshold, indicating negligible marginal contribution once other variables are accounted for host_is_superhost, bathrooms, room_type, and the night-average variables similarly fail to reach significance.
+
+```{r}
+#| echo: false
+#| fig-pos: "H"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+#| include: false
+exp(coef(logit_model)) |>
+  kbl(format = "latex",
+      digits = 3,
+      col.names = c("Predictor", "exp(beta)"),
+      booktabs = TRUE)
+```
+
+### 2.2.1. lasso regularization
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+library(glmnet)
+library(plotmo)
+library(caret)
+# Predictor matrix with dummy encoding
+
+#X1 <- listing[, names(listing) != "fully_booked_30"]
+x_train <- select(listing, -fully_booked_30)
+#y <- listing$fully_booked_30
+y <- factor(listing$fully_booked_30, levels = c("no", "yes"))
+
+lasso_mod <- glmnet(x_train, y, family = "binomial",standardize = T, alpha = 1)
+
+pp1<-plot_glmnet(lasso_mod, xvar = 'norm')
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+
+set.seed(123)  # reproducibility
+
+X<-makeX(x_train)#dummies
+
+fbooked_l1_cv <- cv.glmnet(
+   X,
+   y,
+  family = "binomial",
+  alpha = 1,          # Lasso
+  type.measure = "deviance",  # binary cross-entropy
+  nfolds = 10 )        # 10-fold CV
+
+# Plot 
+pp2<-plot(fbooked_l1_cv)
+
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+
+library(caret)
+library(glmnet)
+library(gbm)
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+  classProbs = TRUE,
+  savePredictions = "final",
+  summaryFunction = mnLogLoss
+)
+lasso_grid <- expand.grid(
+  alpha  = 1,
+  lambda = fbooked_l1_cv$lambda.min  # use your already-tuned lambda
+)
+
+set.seed(123)
+
+lasso_model <- train(
+  fully_booked_30 ~ .,
+  data      = listing,
+  method    = "glmnet",
+  metric    = "LogLoss",
+  maximize  = FALSE,
+  trControl = ctrl,
+  tuneGrid  = lasso_grid
+)
+
+lasso_pred    <- lasso_model$pred %>%
+  filter(alpha  == lasso_model$bestTune$alpha,
+         lambda == lasso_model$bestTune$lambda)
+lasso_prob_no <- lasso_pred$no
+lasso_obs     <- as.character(lasso_pred$obs)
+```
+
+```{r}
+#| echo: false
+#| label: fig-lasso-cross
+#| fig-cap: "Lasso Regularization Path and Cross-Validation Deviance for L1-Regularised Logistic Regression"
+#| fig-width: 8
+#| fig-height: 4
+#| fig-pos: "H"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+
+par(mfrow = c(1, 2))
+
+# Plot 1: Coefficient paths
+plot_glmnet(lasso_mod, xvar = 'norm')
+
+
+# Plot 2: CV deviance curve
+plot(fbooked_l1_cv)
+
+
+par(mfrow = c(1, 1))  # reset
+```
+
+@fig-lasso-cross The Lasso coefficient paths (left) show that reviews_per_month and latitude enter the model earliest and attain the largest magnitudes, identifying them as the dominant predictors, while most other variables enter later or remain near zero under strong regularization. The CV deviance curve (right) flattens beyond λ.min, confirming that meaningful predictive signal is concentrated in a small subset of variables. Based on the left dashed line, λ.min is selected, retaining 9 variables at minimum deviance while shrinking the remainder to exactly zero.
+
+```{r}
+#| echo: false
+#| label: tbl-retained
+#| tbl-cap: "Retained Variables under Lambda.min (L1-Regularised Logistic Regression)"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+
+
+#round(coef(fbooked_l1_cv, s = 'lambda.min'), 3)
+#round(coef(fbooked_l1_cv, s = 'lambda.1se'), 3)
+
+
+
+coef_df <- as.matrix(coef(fbooked_l1_cv, s = "lambda.min")) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Variable") %>%
+  rename(Coefficient = `lambda.min`) %>%
+  filter(Coefficient != 0, Variable != "(Intercept)") %>%
+  arrange(desc(abs(Coefficient))) %>%
+  mutate(Coefficient = round(Coefficient, 4))
+
+knitr::kable(coef_df, format = "latex", booktabs = TRUE)
+```
+
+@tbl-retained presents the variables retained under λ.min from the L1-regularized logistic regression. λ.min was selected over λ.1se as it achieves the lowest cross-validation deviance and retains a richer set of predictors, which is preferable given that log-loss, the evaluation metric rewards well-calibrated probability estimates.
+
+### 2.3.1. Random forest
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+
+#random forest
+
+
+library(caret)
+library(ranger)
+
+
+
+
+logLossSummary <- function(data, lev = NULL, model = NULL) {
+  
+  eps <- 1e-15
+  
+  probs <- pmin(pmax(data$no, eps), 1 - eps)  #probability of no
+  
+  actual <- ifelse(data$obs == "no", 1, 0)    # no is positive
+  
+  ll <- -(mean(
+    actual * log(probs) +
+    (1 - actual) * log(1 - probs)
+  ))
+  
+  c(LogLoss = ll)
+}
+
+#hyperparameter grid search
+rf_grid <- expand.grid(
+  mtry = c(2, 4, 6,8),
+  splitrule = c("gini", 'hellinger'),
+  min.node.size = c(1, 5,10)
+)
+
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+  classProbs = TRUE,
+  summaryFunction = logLossSummary,
+  savePredictions = "final"
+)
+
+set.seed(123)
+
+rf_model <- train(
+  fully_booked_30 ~ .,
+  data = listing,
+  method = "ranger",
+  metric = "LogLoss",
+  maximize = FALSE,
+  trControl = ctrl,
+  tuneGrid = rf_grid,
+  num.trees = 300,
+  importance = "impurity"
+)
+
+```
+
+The random forest was tuned using a full grid search over three hyperparameters: the number of variables randomly sampled at each split (mtry) was searched over (2, 4, 6, 8), the splitting rule (splitrule) was evaluated over Gini impurity and Hellinger distance, and the minimum node size (min.node.size) was varied over (1, 5, 10), yielding 24 combinations in total. Each combination was evaluated using 10-fold cross-validation with log-loss as the selection metric, and the number of trees was fixed at 300 throughout. The combination minimizing average CV log-loss was selected as the final model configuration
+
+```{r}
+#| echo: false
+#| label: fig-best
+#| fig-cap: "10-Fold Cross-Validation Log-Loss for Random Forest Hyperparameter Grid Search"
+#| fig-width: 6
+#| fig-height: 4
+#| fig-pos: "H"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+
+
+plot(rf_model)
+#plot(varImp(rf_model), top = 15)
+
+```
+
+As shown in @fig-best Hellinger splitting rule consistently achieves lower CV log-loss than Gini across all hyperparameter combinations. Within the Hellinger panel, lower mtry values paired with smaller node sizes yield the best performance. The final selected configuration is mtry = 2, splitrule = Hellinger, and min.node.size = 1, which achieved the minimum CV log-loss across all 24 combinations evaluated.
+
+### 2.3.1. Boosting (GBM)
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+#boosting(gbm)
+library(gbm)
+library(caret)
+
+#TARGET + DUMMY VARIABLES 
+
+x_data <- listing %>% select(-fully_booked_30)
+
+dummies <- dummyVars(~ ., data = x_data)
+x_mat   <- predict(dummies, newdata = x_data)
+x_data  <- as.data.frame(x_mat)
+x_data$target <- listing$fully_booked_30 
+# Dummy encode all predictors 
+#dummies <- dummyVars(target ~ ., data = listing)
+#x_data  <- as.data.frame(predict(dummies, newdata = listing))
+#x_data$target <- listing$target   # add target back as factor
+
+# LOG LOSS FUNCTION
+# "no" is positive class 
+logLossSummary <- function(data, lev = NULL, model = NULL) {
+  eps    <- 1e-15
+  probs  <- pmin(pmax(data$no, eps), 1 - eps)  # predicted prob of "no"
+  actual <- ifelse(data$obs == "no", 1, 0)      # "no" = 1, "yes" = 0
+  ll <- -(mean(
+    actual * log(probs) +
+      (1 - actual) * log(1 - probs)
+  ))
+  c(LogLoss = ll)
+}
+
+#CROSS-VALIDATION CONTROL 
+ctrl <- trainControl(
+  method          = "cv",
+  number          = 10,
+  classProbs      = TRUE,            # needed for probability output + log loss
+  summaryFunction = logLossSummary,
+  savePredictions = "final"
+)
+
+#TUNING GRID 
+gbm_grid <- expand.grid(
+  n.trees           = c(100, 200,1000),
+  interaction.depth = c(1, 3, 5),
+  shrinkage         = c(0.05, 0.1),
+  n.minobsinnode    = 10
+)
+
+# TRAIN MODEL
+set.seed(123)
+gbm_model <- train(
+  target ~ .,
+  data      = x_data,
+  method    = "gbm",
+  metric    = "LogLoss",
+  maximize  = FALSE,                 
+  trControl = ctrl,
+  tuneGrid  = gbm_grid,
+  verbose   = FALSE
+)
+
+
+
+
+
+```
+
+The GBM was tuned via a grid search over four hyperparameters, the number of boosting iterations (n.trees) was searched over {100, 200, 1000}, interaction.depth (tree complexity) over {1, 3, 5}, and the learning rate (shrinkage) over {0.05, 0.1}, yielding 3 × 3 × 2 = 18 combinations. The minimum observations per node (n.minobsinnode) was fixed at 10 throughout. Each combination was evaluated using 10-fold CV with log-loss as the selection metric, and the combination minimizing average CV log-loss was selected as the final configuration.
+
+```{r}
+#| echo: false
+#| label: fig-best_gbm
+#| fig-cap: "10-Fold Cross-Validation Log-Loss for GBM Hyperparameter Grid Search"
+#| fig-width: 6
+#| fig-height: 4
+#| fig-pos: "H"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+
+
+library(gbm)
+library(caret)
+
+# Best hyperparameters
+bt<-gbm_model$bestTune
+
+# CV log loss across all tuning combinations
+rt<-gbm_model$results
+
+# Tuning plot
+plot(gbm_model)
+```
+
+@fig-best_gbm indicate that the lower shrinkage rate of 0.05 generally outperforms 0.10, producing more stable and lower log-loss values across boosting iterations. Within the shrinkage = 0.05 panel, intermediate tree depth (interaction.depth = 3) combined with more boosting iterations consistently achieves the lowest log-loss, while depth = 1 performs poorest throughout. The final selected configuration is n.trees = 1000, interaction.depth = 3, shrinkage = 0.05, and n.minobsinnode = 10, confirming that a slower learning rate with deeper trees and more iterations yields the best CV performance and there is clear evidence that we can attain best performer if we increase number of iteration as the best performer does not show signs of slowing down..
+
+# 3. Section 3
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+tau <- mean(listing$fully_booked_30 == "no")
+tau
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+library(caret)
+library(PRROC)
+
+eval_metrics <- function(obs, prob_no, tau) {
+  
+  # predicted class using threshold rule
+  pred <- ifelse(prob_no >= tau, "no", "yes")
+  
+  obs <- factor(obs, levels = c("no","yes"))
+  pred <- factor(pred, levels = c("no","yes"))
+  
+  cm <- confusionMatrix(pred, obs, positive = "no")
+  
+  # AUPRC (NO is positive class)
+  pr <- pr.curve(
+    scores.class0 = prob_no[obs == "no"],
+    scores.class1 = prob_no[obs == "yes"],
+    curve = FALSE
+  )
+  
+  data.frame(
+    LogLoss     = NA,  # filled separately
+    AUPRC       = pr$auc.integral,
+    Recall      = cm$byClass["Sensitivity"],
+    Specificity = cm$byClass["Specificity"],
+    Precision   = cm$byClass["Precision"],
+    F1          = cm$byClass["F1"],
+    Accuracy    = cm$overall["Accuracy"]
+  )
+}
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+log_loss <- function(obs, prob_no) {
+  eps <- 1e-15
+  prob_no <- pmin(pmax(prob_no, eps), 1 - eps)
+  actual <- ifelse(obs == "no", 1, 0)
+  
+  -mean(actual * log(prob_no) + (1 - actual) * log(1 - prob_no))
+}
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+glm_prob_no <- 1 - predict(logit_model, type = "response")
+glm_obs <- listing$fully_booked_30
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+#best hyperparamter in lasso
+lasso_prob_no <- 1 - as.numeric(predict(fbooked_l1_cv, newx = X, s = "lambda.min", type = "response"))
+lasso_obs <- y
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+
+#best hyperparameters in random forest
+rf_pred <- rf_model$pred %>% 
+  filter(mtry == rf_model$bestTune$mtry,
+         splitrule == rf_model$bestTune$splitrule,
+         min.node.size == rf_model$bestTune$min.node.size)
+
+rf_prob_no <- rf_pred$no
+rf_obs <- rf_pred$obs
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+#best hyperparameters in boosting (GBM)
+gbm_pred <- gbm_model$pred %>%
+  filter(n.trees == gbm_model$bestTune$n.trees,
+         interaction.depth == gbm_model$bestTune$interaction.depth,
+         shrinkage == gbm_model$bestTune$shrinkage,
+         n.minobsinnode == gbm_model$bestTune$n.minobsinnode)
+
+gbm_prob_no <- gbm_pred$no
+gbm_obs <- gbm_pred$obs
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| include: false
+
+results <- bind_rows(
+  
+  eval_metrics(glm_obs, glm_prob_no, tau) %>% mutate(Model = "GLM"),
+  eval_metrics(lasso_obs, lasso_prob_no, tau) %>% mutate(Model = "LASSO"),
+  eval_metrics(rf_obs, rf_prob_no, tau) %>% mutate(Model = "Random Forest"),
+  eval_metrics(gbm_obs, gbm_prob_no, tau) %>% mutate(Model = "GBM")
+  
+)
+
+# fill log-loss
+results$LogLoss <- c(
+  log_loss(glm_obs, glm_prob_no),
+  log_loss(lasso_obs, lasso_prob_no),
+  log_loss(rf_obs, rf_prob_no),
+  log_loss(gbm_obs, gbm_prob_no)
+)
+
+results
+
+```
+
+```         
+```
+
+### a) Models comparisons
+
+```{r}
+#| echo: false
+#| label: tbl-com
+#| tbl-cap: "Comparison of Cross-Validation Performance Metrics Across All Models"
+#| message: false
+#| warning: false
+
+library(kableExtra)
+library(dplyr)
+
+
+results %>% select(Model, everything()) %>% kable(digits = 4, format = "latex", booktabs = TRUE)
+
+```
+
+```{r}
+#| echo: false
+#| label: fig-models
+#| fig-cap: "Visual Comparison of 10-Fold Cross-Validation Performance Metrics Across All Fitted Models"
+#| message: false
+#| warning: false
+#| fig-width: 6
+#| fig-height: 4
+#| fig-pos: "H"
+#| out.width: "80%"
+
+plot_data <- results %>%
+  pivot_longer(-Model, names_to = "Metric", values_to = "Value")
+
+ggplot(plot_data,
+       aes(x = Model, y = Value, fill = Model)) +
+  
+  geom_bar(stat = "identity") +
+  
+  facet_wrap(~Metric, scales = "free_y") +
+  
+  scale_fill_manual(
+    values = c(
+      "GLM" = "#1f77b4",
+      "LASSO" = "#ff7f0e",
+      "Random Forest" = "#2ca02c",
+      "GBM" = "#d62728"
+    )
+  ) +
+  
+  labs(fill = "Model") +
+  
+  theme_minimal() +
+  
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 15, hjust = 1)
+  )
+```
+
+### b) Best Model
+
+The GBM model was selected as the final model because it achieved the best overall classification performance across the evaluation metrics as shown in @tbl-com. It produced the highest Recall, F1-score, and Accuracy, indicating a strong ability to correctly identify listings that are not fully booked while maintaining a good balance between precision and sensitivity. Although the Random Forest model achieved slightly better Log-loss and AUPRC values, GBM provided the most balanced and practically useful predictive performance under the chosen decision threshold, making it the most suitable model for this application and further illustration is indicated in @fig-models.
+
+### c) ROC Curve
+
+```{r}
+#| echo: false
+#| label: fig-roc
+#| fig-cap: "ROC Curve for the Selected GBM Model Indicating the Decision Threshold τ = 0.817"
+#| fig-width: 6
+#| fig-height: 4
+#| fig-pos: "H"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+
+#ROC CURVE
+
+library(pROC)
+
+gbm_prob <- gbm_prob_no
+gbm_obs  <- gbm_obs
+
+roc_obj <- roc(
+  response = gbm_obs,
+  predictor = gbm_prob,
+  levels = c("yes", "no"),
+  direction = "<"
+)
+
+# threshold
+tau <- mean(gbm_obs == "no")
+
+# get ROC coordinates at tau
+tau_coords <- coords(
+  roc_obj,
+  x = tau,
+  input = "threshold",
+  ret = c("specificity", "sensitivity")
+)
+
+# plot ROC
+plot(
+  roc_obj,
+  col = "blue",
+  lwd = 2,
+  main = "GBM ROC Curve with τ Point"
+)
+
+# add tau point
+points(
+  tau_coords["specificity"],
+  tau_coords["sensitivity"],
+  col = "red",
+  pch = 19
+)
+
+# label
+text(
+  tau_coords["specificity"],
+  tau_coords["sensitivity"],
+  labels = paste0("τ = ", round(tau, 3)),
+  pos = 4,
+  col = "red"
+)
+```
+
+The ROC curve as indicated in @fig-roc for the GBM model demonstrates strong discriminating ability, curving well above the diagonal random-chance baseline. The red point marks the operating threshold at τ = 0.817, the proportion of target class observations corresponding to a sensitivity of approximately 0.70 and specificity of approximately 0.63, reflecting a reasonable balance between correctly identifying non-fully-booked listings and avoiding false positives.
+
+# 4. Section 4
+
+## 4.1 Variable importance
+
+```{r}
+#| echo: false
+#| label: fig-variable_import
+#| fig-cap: "GBM Variable Importance: Impurity vs Permutation-Based Evaluation"
+#| fig-height: 5
+#| fig-width: 8.5
+#| fig-pos: "H"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+
+library(caret)
+library(gridExtra)
+
+
+imp_obj    <- summary(gbm_model$finalModel, plotit = FALSE)
+imp_sorted <- imp_obj[order(imp_obj$rel.inf, decreasing = FALSE), ]
+top_n      <- tail(imp_sorted, 20)
+
+# Permutation-based importance 
+# Baseline: accuracy on full training set (no permutation)
+baseline_preds <- predict(gbm_model, newdata = x_data, type = "raw")
+baseline_acc   <- mean(baseline_preds == x_data$target)
+
+features     <- setdiff(names(x_data), "target")
+perm_results <- numeric(length(features))
+names(perm_results) <- features
+
+set.seed(123)
+for (i in seq_along(features)) {
+  x_perm                 <- x_data
+  x_perm[[features[i]]]  <- sample(x_perm[[features[i]]])
+  preds_perm             <- predict(gbm_model, newdata = x_perm, type = "raw")
+  acc_perm               <- mean(preds_perm == x_data$target)
+  perm_results[i]        <- baseline_acc - acc_perm  # positive = hurts accuracy = important
+}
+
+perm_sorted <- sort(perm_results, decreasing = FALSE)
+perm_top    <- tail(perm_sorted, 20)
+
+# --- 3. Plot ---
+par(mfrow   = c(1, 2),
+    mar     = c(5, 11, 4, 1),
+    bg      = "white",
+    col.main = "black",
+    font.main = 1)
+
+plot_importance <- function(values, labels, title, xlab) {
+  barplot(values,
+          names.arg = labels,
+          horiz     = TRUE,
+          las       = 1,
+          col       = "#606060",
+          border    = NA,
+          main      = title,
+          xlab      = xlab,
+          cex.names = 0.8,
+          cex.axis  = 0.75,
+          cex.lab   = 0.85,
+          xlim      = c(0, max(values) * 1.1),
+          axes      = TRUE,
+          axisnames = TRUE)
+
+  abline(v   = axTicks(1),
+         col = "grey85",
+         lty = 1,
+         lwd = 0.8)
+
+  barplot(values,
+          names.arg = labels,
+          horiz     = TRUE,
+          las       = 1,
+          col       = "#606060",
+          border    = NA,
+          cex.names = 0.8,
+          xlim      = c(0, max(values) * 1.1),
+          axes      = FALSE,
+          axisnames = FALSE,
+          add       = TRUE)
+}
+
+plot_importance(
+  values = top_n$rel.inf,
+  labels = top_n$var,
+  title  = "Impurity Variable Import",
+  xlab   = "Decrease in Splitting Criterion"
+)
+
+plot_importance(
+  values = perm_top,
+  labels = names(perm_top),
+  title  = "Permutation Variable Import",
+  xlab   = "Increase in Prediction Error"
+)
+
+par(mfrow = c(1, 1))
+```
+
+As shown in @fig-variable_import Price, review activity, and minimum stay constraints are the strongest predictors of full-booking probability, appearing at the top of both plots. Geographic coordinates rank higher on impurity than permutation, suggesting their importance is slightly inflated by the splitting criterion. Both methods agree at the bottom, with bedrooms, bathrooms, and room type dummies consistently contributing little predictive value.
+
+## 4.2 Partial dependency
+
+```{r}
+#| echo: false
+#| label: fig-partial
+#| fig-cap: "Partial Dependence Plots for Selected Predictors in the GBM Model."
+#| fig-height: 4
+#| fig-width: 7
+#| fig-pos: "H"
+#| out.width: "80%"
+#| message: false
+#| warning: false
+ 
+library(pdp)
+library(ggplot2)
+library(gridExtra)
+
+# PDPs
+p1 <- partial(
+  gbm_model,
+  pred.var = "host_years",
+  train = x_data,
+  prob = TRUE
+)
+
+p2 <- partial(
+  gbm_model,
+  pred.var = "price",
+  train = x_data,
+  prob = TRUE
+)
+
+p3 <- partial(
+  gbm_model,
+  pred.var = "reviews_per_month",
+  train = x_data,
+  prob = TRUE
+)
+
+p4 <- partial(
+  gbm_model,
+  pred.var = "minimum_nights",
+  train = x_data,
+  prob = TRUE
+)
+
+# Convert to ggplots
+g1 <- autoplot(p1) +
+  ggtitle("Host Experience (Years)") +
+  ylab("Partial Dependence")
+
+g2 <- autoplot(p2) +
+  ggtitle("Price") +
+  ylab("Partial Dependence")
+
+g3 <- autoplot(p3) +
+  ggtitle("Reviews Per Month") +
+  ylab("Partial Dependence")
+
+g4 <- autoplot(p4) +
+  ggtitle("Minimum Nights") +
+  ylab("Partial Dependence")
+
+# Arrange together
+grid.arrange(g1, g2, g3, g4, ncol = 2)
+```
+
+The partial dependence plots in @fig-partial reveal nonlinear effects across key predictors. Higher prices and greater review activity are both associated with increased vacancy probability, while stricter minimum-night requirements initially reduce booking likelihood before stabilizing. Host experience shows a generally declining trend, though with some inconsistency across more experienced hosts.
+
+# 5. Section 5
+
+## 5.1 Predictions
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+ 
+testing <- read.csv("testing.csv")
+
+
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+library(tidyverse)
+
+testing <- testing %>%
+  mutate(
+    
+    host_since = as.Date(host_since),
+    
+    host_response_time = factor(
+      host_response_time,
+      levels = c(
+        "within an hour",
+        "within a few hours",
+        "within a day",
+        "a few days or more"
+      )
+    ),
+    
+    host_is_superhost = factor(host_is_superhost),
+    
+    room_type = factor(room_type),
+    
+    instant_bookable = factor(instant_bookable),
+    
+    host_years = as.numeric(
+      difftime(Sys.Date(), host_since, units = "days")
+    ) / 365
+  ) %>%
+  
+  select(-host_id,
+         -host_verifications,
+         -host_since)
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#PREDICTIONS
+testing_clean <- testing
+testing_x <- predict(dummies, newdata = testing_clean)
+testing_x <- as.data.frame(testing_x)
+
+pred_prob <- predict(
+  gbm_model,
+  newdata = testing_x,
+  type = "prob"
+)[, "no"]
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#WRITE TO THE FILE
+write.table(
+  pred_prob,
+  file = "SKXMOT001.csv",
+  sep = ",",
+  row.names = FALSE,
+  col.names = FALSE
+)
+```
