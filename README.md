@@ -185,7 +185,7 @@ Here, \(y_i=1\) when `fully_booked_30` is `no`, and \(p_i\) is the predicted pro
 - **Random forest:** Ensemble tree classification.
 - **GBM:** Gradient boosting classification.
 - **CSV:** Storage of supplied data and predicted probabilities.
-- **HTML:** Rendered project report.
+- **PDF:** Rendered project report.
 
 ## Reproducibility
 
@@ -214,4 +214,4 @@ This project compares four classification approaches for predicting whether Cape
 
 The reported results identify GBM as the selected model based on recall, F1 score, and accuracy, while random forest provides the best reported log-loss and AUPRC. The final predictions estimate the probability that each unlabelled listing is not fully booked over the next 30 days.
 
-The findings describe associations within the supplied 2025 dataset and should not be interpreted as causal explanations of housing availability or rental-market behaviour.S
+The findings describe associations within the supplied 2025 dataset and should not be interpreted as causal explanations of housing availability or rental-market behaviour.
